@@ -2598,9 +2598,12 @@ impl TermWindow {
             result => return Ok(result),
         }
 
-        let window = self.window.as_ref().map(|w| w.clone());
-
         match assignment {
+            ActivateAI => {
+                self.toggle_ai_overlay_for_active_pane();
+                return Ok(PerformAssignmentResult::Handled);
+            }
+
             ActivateKeyTable {
                 name,
                 timeout_milliseconds,
@@ -2727,7 +2730,7 @@ impl TermWindow {
             IncreaseFontSize => self.increase_font_size(),
             ResetFontSize => self.reset_font_size(),
             ResetFontAndWindowSize => {
-                if let Some(w) = window.as_ref() {
+                if let Some(w) = self.window.as_ref().cloned() {
                     self.reset_font_and_window_size(&w)?
                 }
             }
@@ -2754,12 +2757,12 @@ impl TermWindow {
                 }
             }
             Hide => {
-                if let Some(w) = window.as_ref() {
+                if let Some(w) = self.window.as_ref() {
                     w.hide();
                 }
             }
             Show => {
-                if let Some(w) = window.as_ref() {
+                if let Some(w) = self.window.as_ref() {
                     w.show();
                 }
             }
@@ -3416,6 +3419,32 @@ impl TermWindow {
                 .as_ref()
                 .map(|overlay| overlay.pane.clone())
                 .or_else(|| Some(pane))
+        }
+    }
+
+    fn toggle_ai_overlay_for_active_pane(&mut self) {
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => return,
+        };
+
+        if let Some(pane) = tab.get_active_pane() {
+            let pane_id = pane.pane_id();
+            // If an overlay is already present for this pane, cancel it; otherwise start a new one.
+            if self.pane_state(pane_id).overlay.is_some() {
+                self.cancel_overlay_for_pane(pane_id);
+            } else {
+                let window = self.window.clone().unwrap();
+                let gui_win = GuiWin::new(self);
+                let mux_pane = mux_lua::MuxPane(pane_id);
+                let (overlay, future) = crate::overlay::start_overlay_pane(self, &pane, move |_pane_id, term| {
+                    crate::overlay::ai::run_ai_overlay(term, gui_win, mux_pane, None)
+                });
+                self.assign_overlay_for_pane(pane_id, overlay);
+                promise::spawn::spawn(future).detach();
+                window.invalidate();
+            }
         }
     }
 
